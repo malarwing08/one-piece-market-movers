@@ -45,7 +45,7 @@ def get_cards():
 
     params = {
         "game": "One Piece Card Game",
-        "limit": 500,
+        "limit": 20,
         "include_price_history": "true"
     }
 
