@@ -1,4 +1,5 @@
 import os
+import time
 import requests
 import discord
 from discord.ext import commands
@@ -10,7 +11,11 @@ BASE_URL = "https://api.justtcg.com/v1/cards"
 GAME_NAME = "One Piece Card Game"
 
 LIMIT = 20
-MAX_PAGES_TO_SCAN = 15
+MAX_PAGES_TO_SCAN = 3
+API_DELAY = 1.2
+CACHE_SECONDS = 600
+
+cache = {}
 
 intents = discord.Intents.default()
 intents.message_content = True
@@ -54,8 +59,7 @@ def fetch_page(search=None, page=1):
 
 def get_price(card):
     prices = []
-
-    price_keys = [
+    keys = [
         "marketPrice",
         "tcgplayerMarketPrice",
         "price",
@@ -65,7 +69,7 @@ def get_price(card):
         "highPrice",
     ]
 
-    for key in price_keys:
+    for key in keys:
         try:
             if card.get(key):
                 prices.append(float(card.get(key)))
@@ -73,7 +77,7 @@ def get_price(card):
             pass
 
     for variant in card.get("variants", []):
-        for key in price_keys:
+        for key in keys:
             try:
                 if variant.get(key):
                     prices.append(float(variant.get(key)))
@@ -83,7 +87,7 @@ def get_price(card):
     return max(prices) if prices else None
 
 def get_image(card):
-    image_keys = [
+    keys = [
         "image",
         "imageUrl",
         "image_url",
@@ -97,29 +101,29 @@ def get_image(card):
         "picture",
     ]
 
-    for key in image_keys:
+    for key in keys:
         if card.get(key):
             return card.get(key)
 
     for variant in card.get("variants", []):
-        for key in image_keys:
+        for key in keys:
             if variant.get(key):
                 return variant.get(key)
 
     def deep_find(obj):
         if isinstance(obj, dict):
-            for k, v in obj.items():
-                if isinstance(v, str):
-                    lower = v.lower()
-                    if v.startswith("http") and (
-                        ".jpg" in lower or
-                        ".jpeg" in lower or
-                        ".png" in lower or
-                        ".webp" in lower
+            for _, value in obj.items():
+                if isinstance(value, str):
+                    lower = value.lower()
+                    if value.startswith("http") and (
+                        ".jpg" in lower
+                        or ".jpeg" in lower
+                        or ".png" in lower
+                        or ".webp" in lower
                     ):
-                        return v
+                        return value
 
-                found = deep_find(v)
+                found = deep_find(value)
                 if found:
                     return found
 
@@ -167,12 +171,18 @@ def card_key(card):
     )
 
 def is_set_match(card, set_name):
-    card_set = get_set(card).lower()
-    target = set_name.lower()
-
-    return target in card_set
+    return set_name.lower() in get_set(card).lower()
 
 def scan_cards(search=None, exact_set=None):
+    cache_key = f"{search}|{exact_set}"
+
+    now = time.time()
+
+    if cache_key in cache:
+        cached_time, cached_cards = cache[cache_key]
+        if now - cached_time < CACHE_SECONDS:
+            return cached_cards
+
     found = {}
 
     for page in range(1, MAX_PAGES_TO_SCAN + 1):
@@ -185,13 +195,22 @@ def scan_cards(search=None, exact_set=None):
             if exact_set and not is_set_match(card, exact_set):
                 continue
 
+            if get_price(card) is None:
+                continue
+
             found[card_key(card)] = card
 
-    cards = list(found.values())
+        time.sleep(API_DELAY)
 
-    cards = [c for c in cards if get_price(c) is not None]
+    sorted_cards = sorted(
+        found.values(),
+        key=lambda c: get_price(c) or 0,
+        reverse=True
+    )
 
-    return sorted(cards, key=lambda c: get_price(c) or 0, reverse=True)
+    cache[cache_key] = (now, sorted_cards)
+
+    return sorted_cards
 
 class CardPaginator(discord.ui.View):
     def __init__(self, title, cards):
@@ -276,7 +295,7 @@ async def helpme(ctx):
         "`!sp` `!manga` `!alt`\n"
         "`!zoro` `!nami` `!perona`\n"
         "`!card zoro`\n\n"
-        "Nami scans multiple pages, removes duplicates, and sorts highest price first."
+        "Nami scans multiple pages, avoids rate limits, and sorts highest price first."
     )
 
 @bot.command()
