@@ -7,17 +7,23 @@ DISCORD_BOT_TOKEN = os.environ["DISCORD_BOT_TOKEN"]
 JUSTTCG_API_KEY = os.environ["JUSTTCG_API_KEY"]
 
 BASE_URL = "https://api.justtcg.com/v1/cards"
+GAME_NAME = "One Piece Card Game"
 LIMIT = 20
 
 intents = discord.Intents.default()
 intents.message_content = True
 
-bot = commands.Bot(command_prefix="!", intents=intents)
+bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+# -----------------------
+# API HELPERS
+# -----------------------
 
 def fetch_cards(search=None):
     headers = {"x-api-key": JUSTTCG_API_KEY}
+
     params = {
-        "game": "One Piece Card Game",
+        "game": GAME_NAME,
         "limit": LIMIT,
         "priceHistoryDuration": "30d"
     }
@@ -27,7 +33,9 @@ def fetch_cards(search=None):
 
     r = requests.get(BASE_URL, headers=headers, params=params, timeout=30)
     r.raise_for_status()
+
     return r.json().get("data", [])
+
 
 def get_price(card):
     for v in card.get("variants", []):
@@ -36,125 +44,171 @@ def get_price(card):
             return float(price)
     return None
 
-def get_old_price(card):
-    for v in card.get("variants", []):
-        history = v.get("priceHistory") or v.get("price_history") or []
-        if len(history) >= 2:
-            old = history[-2].get("marketPrice") or history[-2].get("price")
-            if old:
-                return float(old)
-    return None
 
-def percent(old, new):
-    if not old or old <= 0:
-        return 0
-    return ((new - old) / old) * 100
+def get_image(card):
+    return (
+        card.get("image")
+        or card.get("imageUrl")
+        or card.get("image_url")
+        or card.get("img")
+        or None
+    )
 
-def make_movers(cards):
-    movers = []
 
-    for card in cards:
-        new = get_price(card)
-        old = get_old_price(card)
+def get_set(card):
+    return (
+        card.get("set")
+        or card.get("setName")
+        or card.get("set_name")
+        or "Unknown Set"
+    )
 
-        if not new or not old:
-            continue
 
-        movers.append({
-            "name": card.get("name", "Unknown Card"),
-            "old": old,
-            "new": new,
-            "change": percent(old, new)
-        })
+def get_rarity(card):
+    return (
+        card.get("rarity")
+        or card.get("cardType")
+        or "Unknown Rarity"
+    )
 
-    return movers
 
-async def send_list(ctx, title, movers):
-    if not movers:
-        await ctx.send("No movement data found.")
+async def send_card_results(ctx, title, cards):
+    if not cards:
+        await ctx.send("No cards found.")
         return
 
-    msg = f"**{title}**\n\n"
+    await ctx.send(f"**{title}**")
 
-    for i, c in enumerate(movers[:20], 1):
-        msg += f"{i}. **{c['name']}**\n${c['old']:.2f} → ${c['new']:.2f} ({c['change']:+.2f}%)\n\n"
+    for card in cards[:10]:
+        price = get_price(card)
+        image = get_image(card)
 
-    await ctx.send(msg[:1900])
+        embed = discord.Embed(
+            title=card.get("name", "Unknown Card"),
+            description=(
+                f"**Set:** {get_set(card)}\n"
+                f"**Rarity:** {get_rarity(card)}\n"
+                f"**Market Price:** ${price:.2f}" if price else
+                f"**Set:** {get_set(card)}\n"
+                f"**Rarity:** {get_rarity(card)}\n"
+                f"**Market Price:** Not found"
+            )
+        )
+
+        if image:
+            embed.set_image(url=image)
+
+        await ctx.send(embed=embed)
+
+
+async def search_and_send(ctx, search_term, title=None):
+    try:
+        cards = fetch_cards(search_term)
+        await send_card_results(ctx, title or f"Search: {search_term}", cards)
+    except Exception as e:
+        await ctx.send(f"Bot error: {e}")
+
+
+# -----------------------
+# BASIC COMMANDS
+# -----------------------
 
 @bot.event
 async def on_ready():
     print(f"nami is online as {bot.user}")
 
-@bot.command(name="helpme")
+
+@bot.command()
 async def helpme(ctx):
     await ctx.send(
-        "**Nami Commands**\n"
-        "`!gainers` - top gainers\n"
-        "`!losers` - top losers\n"
-        "`!leaderboard` - biggest movers\n"
-        "`!card nami` - search a card\n"
-        "`!manga` - manga movers\n"
-        "`!sp` - SP movers\n"
-        "`!eb02` - EB02 movers\n"
-        "`!op11` - OP11 movers"
+        "**Nami Commands**\n\n"
+        "**Sets:** `!op01` through `!op16`\n"
+        "**Extra Boosters:** `!eb01` `!eb02` `!eb03`\n"
+        "**PRB:** `!prb01` `!prb02`\n"
+        "**Markets:** `!sp` `!manga` `!alt`\n"
+        "**Search:** type any character like `!perona`, `!nami`, `!zoro`\n"
+        "**Exact search:** `!card perona`"
     )
 
-@bot.command()
-async def gainers(ctx):
-    cards = fetch_cards()
-    movers = sorted(make_movers(cards), key=lambda x: x["change"], reverse=True)
-    await send_list(ctx, "📈 One Piece Gainers", movers)
-
-@bot.command()
-async def losers(ctx):
-    cards = fetch_cards()
-    movers = sorted(make_movers(cards), key=lambda x: x["change"])
-    await send_list(ctx, "📉 One Piece Losers", movers)
-
-@bot.command()
-async def leaderboard(ctx):
-    cards = fetch_cards()
-    movers = sorted(make_movers(cards), key=lambda x: abs(x["change"]), reverse=True)
-    await send_list(ctx, "🏆 Biggest Market Movers", movers)
 
 @bot.command()
 async def card(ctx, *, name):
-    cards = fetch_cards(name)
+    await search_and_send(ctx, name, f"🏴‍☠️ Card Search: {name}")
 
-    if not cards:
-        await ctx.send("No card found.")
-        return
 
-    c = cards[0]
-    price = get_price(c)
-
-    await ctx.send(
-        f"**{c.get('name', 'Unknown Card')}**\n"
-        f"Market Price: ${price:.2f}" if price else "No price found."
-    )
-
-@bot.command()
-async def manga(ctx):
-    cards = fetch_cards("manga")
-    movers = sorted(make_movers(cards), key=lambda x: x["change"], reverse=True)
-    await send_list(ctx, "🔥 Manga Rare Movers", movers)
+# -----------------------
+# MARKET COMMANDS
+# -----------------------
 
 @bot.command()
 async def sp(ctx):
-    cards = fetch_cards("SP")
-    movers = sorted(make_movers(cards), key=lambda x: x["change"], reverse=True)
-    await send_list(ctx, "✨ SP Card Movers", movers)
+    await search_and_send(ctx, "SP", "✨ SP Market")
+
 
 @bot.command()
-async def eb02(ctx):
-    cards = fetch_cards("EB02")
-    movers = sorted(make_movers(cards), key=lambda x: x["change"], reverse=True)
-    await send_list(ctx, "🥇 EB02 Movers", movers)
+async def manga(ctx):
+    await search_and_send(ctx, "manga", "🔥 Manga Rare Market")
+
 
 @bot.command()
-async def op11(ctx):
-    cards = fetch_cards("OP11")
-    movers = sorted(make_movers(cards), key=lambda x: x["change"], reverse=True)
-    await send_list(ctx, "⚔️ OP11 Movers", movers)
+async def alt(ctx):
+    await search_and_send(ctx, "alternate art", "🎨 Alt Art Market")
+
+
+# -----------------------
+# SET COMMANDS
+# -----------------------
+
+async def set_command(ctx, set_code):
+    await search_and_send(ctx, set_code.upper(), f"📦 {set_code.upper()} Market")
+
+
+for i in range(1, 17):
+    code = f"op{i:02d}"
+
+    async def command_func(ctx, code=code):
+        await set_command(ctx, code)
+
+    bot.command(name=code)(command_func)
+
+
+for code in ["eb01", "eb02", "eb03", "prb01", "prb02"]:
+    async def command_func(ctx, code=code):
+        await set_command(ctx, code)
+
+    bot.command(name=code)(command_func)
+
+
+# -----------------------
+# CHARACTER SEARCH
+# Allows !perona, !nami, !zoro, etc.
+# -----------------------
+
+@bot.event
+async def on_message(message):
+    if message.author.bot:
+        return
+
+    if not message.content.startswith("!"):
+        return
+
+    command_text = message.content[1:].strip()
+
+    known_commands = [
+        "helpme", "card", "sp", "manga", "alt",
+        *[f"op{i:02d}" for i in range(1, 17)],
+        "eb01", "eb02", "eb03",
+        "prb01", "prb02"
+    ]
+
+    first_word = command_text.split()[0].lower()
+
+    if first_word in known_commands:
+        await bot.process_commands(message)
+        return
+
+    ctx = await bot.get_context(message)
+    await search_and_send(ctx, command_text, f"🔎 Character Search: {command_text}")
+
 
 bot.run(DISCORD_BOT_TOKEN)
