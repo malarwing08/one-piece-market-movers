@@ -9,10 +9,10 @@ JUSTTCG_API_KEY = os.environ["JUSTTCG_API_KEY"]
 BASE_URL = "https://api.justtcg.com/v1/cards"
 GAME_NAME = "One Piece Card Game"
 LIMIT = 20
+MAX_PAGES_TO_SCAN = 5
 
 intents = discord.Intents.default()
 intents.message_content = True
-
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
 SET_SEARCHES = {
@@ -27,21 +27,13 @@ SET_SEARCHES = {
     "op09": "Emperors in the New World",
     "op10": "Royal Blood",
     "op11": "A Fist of Divine Speed",
-    "op12": "Legacy of the Master",
-    "op13": "Carrying on His Will",
-    "op14": "The Azure Sea's Seven",
-    "op15": "Adventure on Kami's Island",
-    "op16": "The Time of Battle",
     "eb01": "Memorial Collection",
     "eb02": "Anime 25th Collection",
-    "eb03": "One Piece Heroines Edition",
     "prb01": "One Piece Card The Best",
-    "prb02": "One Piece Card The Best Vol.2",
 }
 
-def fetch_cards(search=None, page=1, set_name=None):
+def fetch_page(search=None, page=1):
     headers = {"x-api-key": JUSTTCG_API_KEY}
-
     params = {
         "game": GAME_NAME,
         "limit": LIMIT,
@@ -53,9 +45,6 @@ def fetch_cards(search=None, page=1, set_name=None):
     if search:
         params["q"] = search
 
-    if set_name:
-        params["set"] = set_name
-
     r = requests.get(BASE_URL, headers=headers, params=params, timeout=30)
     r.raise_for_status()
     return r.json().get("data", [])
@@ -63,7 +52,7 @@ def fetch_cards(search=None, page=1, set_name=None):
 def get_price(card):
     prices = []
 
-    for key in ["marketPrice", "tcgplayerMarketPrice", "price", "latestPrice"]:
+    for key in ["marketPrice", "tcgplayerMarketPrice", "price", "latestPrice", "lowPrice", "midPrice"]:
         if card.get(key):
             try:
                 prices.append(float(card[key]))
@@ -71,7 +60,7 @@ def get_price(card):
                 pass
 
     for v in card.get("variants", []):
-        for key in ["marketPrice", "tcgplayerMarketPrice", "price", "latestPrice"]:
+        for key in ["marketPrice", "tcgplayerMarketPrice", "price", "latestPrice", "lowPrice", "midPrice"]:
             if v.get(key):
                 try:
                     prices.append(float(v[key]))
@@ -110,26 +99,49 @@ def get_image(card):
     return find_image_url(card)
 
 def get_set(card):
-    return card.get("set") or card.get("setName") or "Unknown Set"
-
-def get_rarity(card):
-    return card.get("rarity") or card.get("type") or "Unknown Rarity"
+    return str(card.get("set") or card.get("setName") or card.get("set_name") or "")
 
 def get_number(card):
-    return card.get("number") or card.get("cardNumber") or "Unknown Number"
+    return str(card.get("number") or card.get("cardNumber") or card.get("collectorNumber") or "")
+
+def get_rarity(card):
+    return str(card.get("rarity") or card.get("type") or card.get("cardType") or "")
+
+def card_key(card):
+    return (
+        card.get("id")
+        or card.get("tcgplayerProductId")
+        or card.get("productId")
+        or f"{card.get('name')}-{get_set(card)}-{get_number(card)}"
+    )
 
 def sort_by_price(cards):
     return sorted(cards, key=lambda c: get_price(c) or 0, reverse=True)
 
+def scan_cards(search=None, exact_set=None):
+    found = {}
+    for page in range(1, MAX_PAGES_TO_SCAN + 1):
+        cards = fetch_page(search=search, page=page)
+
+        if not cards:
+            break
+
+        for card in cards:
+            if exact_set:
+                card_set = get_set(card).lower()
+                if exact_set.lower() not in card_set:
+                    continue
+
+            found[card_key(card)] = card
+
+    return sort_by_price(list(found.values()))
+
 class CardPaginator(discord.ui.View):
-    def __init__(self, search_term, title, cards, page=1, set_name=None):
+    def __init__(self, title, cards):
         super().__init__(timeout=300)
-        self.search_term = search_term
         self.title = title
-        self.cards = sort_by_price(cards)
-        self.page = page
+        self.cards = cards
         self.index = 0
-        self.set_name = set_name
 
     def build_embed(self):
         card = self.cards[self.index]
@@ -140,14 +152,14 @@ class CardPaginator(discord.ui.View):
             title=card.get("name", "Unknown Card"),
             description=(
                 f"**Market:** {self.title}\n"
-                f"**Set:** {get_set(card)}\n"
-                f"**Number:** {get_number(card)}\n"
-                f"**Rarity:** {get_rarity(card)}\n"
+                f"**Set:** {get_set(card) or 'Unknown Set'}\n"
+                f"**Number:** {get_number(card) or 'Unknown Number'}\n"
+                f"**Rarity:** {get_rarity(card) or 'Unknown Rarity'}\n"
                 f"**Price:** ${price:.2f}" if price else
                 f"**Market:** {self.title}\n"
-                f"**Set:** {get_set(card)}\n"
-                f"**Number:** {get_number(card)}\n"
-                f"**Rarity:** {get_rarity(card)}\n"
+                f"**Set:** {get_set(card) or 'Unknown Set'}\n"
+                f"**Number:** {get_number(card) or 'Unknown Number'}\n"
+                f"**Rarity:** {get_rarity(card) or 'Unknown Rarity'}\n"
                 f"**Price:** Not found"
             ),
             color=discord.Color.orange()
@@ -156,10 +168,7 @@ class CardPaginator(discord.ui.View):
         if image:
             embed.set_image(url=image)
 
-        embed.set_footer(
-            text=f"Card {self.index + 1}/{len(self.cards)} • Page {self.page} • Highest price first"
-        )
-
+        embed.set_footer(text=f"Card {self.index + 1}/{len(self.cards)} • Highest price first")
         return embed
 
     async def update_msg(self, interaction):
@@ -175,35 +184,18 @@ class CardPaginator(discord.ui.View):
         self.index = (self.index + 1) % len(self.cards)
         await self.update_msg(interaction)
 
-    @discord.ui.button(label="⏭️ Next 20", style=discord.ButtonStyle.blurple)
-    async def next_page(self, interaction, button):
-        self.page += 1
-
-        cards = fetch_cards(
-            search=self.search_term,
-            page=self.page,
-            set_name=self.set_name
-        )
-
-        if not cards:
-            self.page -= 1
-            await interaction.response.send_message("No more cards found.", ephemeral=True)
-            return
-
-        self.cards = sort_by_price(cards)
-        self.index = 0
-        await self.update_msg(interaction)
-
-async def send_cards(ctx, title, search=None, set_name=None):
+async def send_cards(ctx, title, search=None, exact_set=None):
     try:
-        cards = fetch_cards(search=search, page=1, set_name=set_name)
+        msg = await ctx.send("🔎 Scanning cards...")
+
+        cards = scan_cards(search=search, exact_set=exact_set)
 
         if not cards:
-            await ctx.send("No cards found.")
+            await msg.edit(content="No cards found.")
             return
 
-        view = CardPaginator(search, title, cards, page=1, set_name=set_name)
-        await ctx.send(embed=view.build_embed(), view=view)
+        view = CardPaginator(title, cards)
+        await msg.edit(content="", embed=view.build_embed(), view=view)
 
     except Exception as e:
         await ctx.send(f"Bot error: {e}")
@@ -216,18 +208,17 @@ async def on_ready():
 async def helpme(ctx):
     await ctx.send(
         "**Nami Commands**\n\n"
-        "`!op01` through `!op16`\n"
-        "`!eb01` `!eb02` `!eb03`\n"
-        "`!prb01` `!prb02`\n"
+        "`!op01` through `!op11`\n"
+        "`!eb01` `!eb02` `!prb01`\n"
         "`!sp` `!manga` `!alt`\n"
-        "`!perona` `!nami` `!zoro`\n"
-        "`!card perona`\n\n"
-        "Set commands now use the actual set filter, not random OP text."
+        "`!zoro` `!nami` `!perona`\n"
+        "`!card zoro`\n\n"
+        "Character searches scan multiple pages and sort by highest price first."
     )
 
 @bot.command()
 async def card(ctx, *, name):
-    await send_cards(ctx, f"Character/Card Search: {name}", search=name)
+    await send_cards(ctx, f"Search: {name}", search=name)
 
 @bot.command()
 async def sp(ctx):
@@ -235,15 +226,15 @@ async def sp(ctx):
 
 @bot.command()
 async def manga(ctx):
-    await send_cards(ctx, "Manga Rare Market", search="Manga")
+    await send_cards(ctx, "Manga Market", search="Manga")
 
 @bot.command()
 async def alt(ctx):
-    await send_cards(ctx, "Alternate Art Market", search="Alternate Art")
+    await send_cards(ctx, "Alt Art Market", search="Alternate Art")
 
 async def set_command(ctx, code):
     set_name = SET_SEARCHES[code.lower()]
-    await send_cards(ctx, f"{code.upper()} - {set_name}", set_name=set_name)
+    await send_cards(ctx, f"{code.upper()} - {set_name}", search=set_name, exact_set=set_name)
 
 for code in SET_SEARCHES:
     async def command_func(ctx, code=code):
@@ -259,18 +250,17 @@ async def on_message(message):
     if not message.content.startswith("!"):
         return
 
-    command_text = message.content[1:].strip()
-    if not command_text:
+    text = message.content[1:].strip()
+    if not text:
         return
 
-    first_word = command_text.split()[0].lower()
-
+    first_word = text.split()[0].lower()
     known = ["helpme", "card", "sp", "manga", "alt", *SET_SEARCHES.keys()]
 
     if first_word in known:
         await bot.process_commands(message)
     else:
         ctx = await bot.get_context(message)
-        await send_cards(ctx, f"Character Search: {command_text}", search=command_text)
+        await send_cards(ctx, f"Character Search: {text}", search=text)
 
 bot.run(DISCORD_BOT_TOKEN)
