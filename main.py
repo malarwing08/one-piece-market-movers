@@ -110,32 +110,7 @@ def get_image(card):
             if variant.get(key):
                 return variant.get(key)
 
-    def deep_find(obj):
-        if isinstance(obj, dict):
-            for _, value in obj.items():
-                if isinstance(value, str):
-                    lower = value.lower()
-                    if value.startswith("http") and (
-                        ".jpg" in lower
-                        or ".jpeg" in lower
-                        or ".png" in lower
-                        or ".webp" in lower
-                    ):
-                        return value
-
-                found = deep_find(value)
-                if found:
-                    return found
-
-        if isinstance(obj, list):
-            for item in obj:
-                found = deep_find(item)
-                if found:
-                    return found
-
-        return None
-
-    return deep_find(card)
+    return None
 
 def get_set(card):
     return str(
@@ -175,7 +150,6 @@ def is_set_match(card, set_name):
 
 def scan_cards(search=None, exact_set=None):
     cache_key = f"{search}|{exact_set}"
-
     now = time.time()
 
     if cache_key in cache:
@@ -238,6 +212,7 @@ class CardPaginator(discord.ui.View):
 
         if image:
             embed.set_image(url=image)
+            embed.set_thumbnail(url=image)
 
         embed.set_footer(
             text=f"Card {self.index + 1}/{len(self.cards)} • Highest price first"
