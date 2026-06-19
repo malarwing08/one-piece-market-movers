@@ -1,4 +1,5 @@
 import os
+import re
 import requests
 import discord
 from discord.ext import commands
@@ -15,13 +16,16 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
 
+
 def fetch_cards(search=None, page=1):
     headers = {"x-api-key": JUSTTCG_API_KEY}
+
     params = {
         "game": GAME_NAME,
         "limit": LIMIT,
         "page": page,
-        "priceHistoryDuration": "30d"
+        "orderBy": "price",
+        "order": "desc",
     }
 
     if search:
@@ -31,15 +35,35 @@ def fetch_cards(search=None, page=1):
     r.raise_for_status()
     return r.json().get("data", [])
 
+
 def get_price(card):
     prices = []
+
     for v in card.get("variants", []):
-        price = (
-            v.get("marketPrice")
-            or v.get("price")
-            or v.get("latestPrice")
-            or v.get("tcgplayerMarketPrice")
-        )
+        for key in [
+            "marketPrice",
+            "tcgplayerMarketPrice",
+            "price",
+            "latestPrice",
+            "lowPrice",
+            "midPrice",
+        ]:
+            price = v.get(key)
+            if price:
+                try:
+                    prices.append(float(price))
+                except:
+                    pass
+
+    for key in [
+        "marketPrice",
+        "tcgplayerMarketPrice",
+        "price",
+        "latestPrice",
+        "lowPrice",
+        "midPrice",
+    ]:
+        price = card.get(key)
         if price:
             try:
                 prices.append(float(price))
@@ -48,40 +72,110 @@ def get_price(card):
 
     return max(prices) if prices else None
 
-def get_image(card):
-    keys = [
-        "image", "imageUrl", "image_url",
-        "imageSmall", "imageLarge",
-        "cardImage", "cardImageUrl",
-        "tcgplayerImageUrl", "img"
+
+def find_image_url(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            key_lower = str(key).lower()
+
+            if isinstance(value, str):
+                if (
+                    "image" in key_lower
+                    or "img" in key_lower
+                    or "photo" in key_lower
+                    or "picture" in key_lower
+                ):
+                    if value.startswith("http"):
+                        return value
+
+                if value.startswith("http") and any(
+                    ext in value.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]
+                ):
+                    return value
+
+            found = find_image_url(value)
+            if found:
+                return found
+
+    if isinstance(obj, list):
+        for item in obj:
+            found = find_image_url(item)
+            if found:
+                return found
+
+    return None
+
+
+def find_tcgplayer_id(card):
+    possible_keys = [
+        "tcgplayerProductId",
+        "tcgplayerId",
+        "productId",
+        "tcgProductId",
+        "tcgplayer_product_id",
     ]
 
-    for key in keys:
+    for key in possible_keys:
         if card.get(key):
             return card.get(key)
 
     for v in card.get("variants", []):
-        for key in keys:
+        for key in possible_keys:
             if v.get(key):
                 return v.get(key)
 
     return None
 
+
+def get_image(card):
+    image = find_image_url(card)
+
+    if image:
+        return image
+
+    product_id = find_tcgplayer_id(card)
+
+    if product_id:
+        return f"https://tcgplayer-cdn.tcgplayer.com/product/{product_id}_in_1000x1000.jpg"
+
+    return None
+
+
 def get_set(card):
-    return card.get("set") or card.get("setName") or card.get("set_name") or "Unknown Set"
+    return (
+        card.get("set")
+        or card.get("setName")
+        or card.get("set_name")
+        or card.get("setCode")
+        or "Unknown Set"
+    )
+
 
 def get_rarity(card):
-    return card.get("rarity") or card.get("cardType") or card.get("type") or "Unknown Rarity"
+    return (
+        card.get("rarity")
+        or card.get("cardType")
+        or card.get("type")
+        or "Unknown Rarity"
+    )
+
 
 def get_number(card):
-    return card.get("number") or card.get("cardNumber") or card.get("collectorNumber") or "Unknown Number"
+    return (
+        card.get("number")
+        or card.get("cardNumber")
+        or card.get("collectorNumber")
+        or "Unknown Number"
+    )
+
 
 def sort_by_price(cards):
     return sorted(cards, key=lambda c: get_price(c) or 0, reverse=True)
 
+
 class CardPaginator(discord.ui.View):
     def __init__(self, search_term, title, cards, page=1):
-        super().__init__(timeout=180)
+        super().__init__(timeout=300)
         self.search_term = search_term
         self.title = title
         self.cards = sort_by_price(cards)
@@ -110,43 +204,46 @@ class CardPaginator(discord.ui.View):
             color=discord.Color.orange()
         )
 
-        embed.set_footer(text=f"Card {self.index + 1}/{len(self.cards)} • Page {self.page}")
+        embed.set_footer(
+            text=f"Card {self.index + 1}/{len(self.cards)} • Page {self.page} • Sorted high to low"
+        )
 
         if image:
             embed.set_image(url=image)
 
         return embed
 
-    async def update(self, interaction):
+    async def update_msg(self, interaction):
         await interaction.response.edit_message(embed=self.build_embed(), view=self)
 
     @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.gray)
     async def previous(self, interaction, button):
         self.index = (self.index - 1) % len(self.cards)
-        await self.update(interaction)
+        await self.update_msg(interaction)
 
     @discord.ui.button(label="➡️ Next", style=discord.ButtonStyle.gray)
     async def next(self, interaction, button):
         self.index = (self.index + 1) % len(self.cards)
-        await self.update(interaction)
+        await self.update_msg(interaction)
 
     @discord.ui.button(label="⏭️ Next 20", style=discord.ButtonStyle.blurple)
     async def next_page(self, interaction, button):
         try:
             self.page += 1
-            cards = fetch_cards(self.search_term, self.page)
+            new_cards = fetch_cards(self.search_term, self.page)
 
-            if not cards:
+            if not new_cards:
                 self.page -= 1
                 await interaction.response.send_message("No more cards found.", ephemeral=True)
                 return
 
-            self.cards = sort_by_price(cards)
+            self.cards = sort_by_price(new_cards)
             self.index = 0
-            await self.update(interaction)
+            await self.update_msg(interaction)
 
         except Exception as e:
             await interaction.response.send_message(f"Bot error: {e}", ephemeral=True)
+
 
 async def send_cards(ctx, search_term, title):
     try:
@@ -162,9 +259,11 @@ async def send_cards(ctx, search_term, title):
     except Exception as e:
         await ctx.send(f"Bot error: {e}")
 
+
 @bot.event
 async def on_ready():
     print(f"nami is online as {bot.user}")
+
 
 @bot.command()
 async def helpme(ctx):
@@ -176,27 +275,33 @@ async def helpme(ctx):
         "`!sp` `!manga` `!alt`\n"
         "`!perona` `!nami` `!zoro`\n"
         "`!card perona`\n\n"
-        "Use buttons to scroll cards."
+        "Results are sorted by highest market price first."
     )
+
 
 @bot.command()
 async def card(ctx, *, name):
     await send_cards(ctx, name, f"Card Search: {name}")
 
+
 @bot.command()
 async def sp(ctx):
-    await send_cards(ctx, "SP", "SP Market")
+    await send_cards(ctx, "(SP)", "SP Market")
+
 
 @bot.command()
 async def manga(ctx):
-    await send_cards(ctx, "manga", "Manga Rare Market")
+    await send_cards(ctx, "Manga", "Manga Rare Market")
+
 
 @bot.command()
 async def alt(ctx):
-    await send_cards(ctx, "alternate art", "Alt Art Market")
+    await send_cards(ctx, "Alternate Art", "Alt Art Market")
+
 
 async def set_command(ctx, code):
     await send_cards(ctx, code.upper(), f"{code.upper()} Market")
+
 
 for i in range(1, 17):
     code = f"op{i:02d}"
@@ -206,11 +311,13 @@ for i in range(1, 17):
 
     bot.command(name=code)(command_func)
 
+
 for code in ["eb01", "eb02", "eb03", "prb01", "prb02"]:
     async def command_func(ctx, code=code):
         await set_command(ctx, code)
 
     bot.command(name=code)(command_func)
+
 
 @bot.event
 async def on_message(message):
@@ -221,6 +328,10 @@ async def on_message(message):
         return
 
     command_text = message.content[1:].strip()
+
+    if not command_text:
+        return
+
     first_word = command_text.split()[0].lower()
 
     known = [
@@ -234,5 +345,6 @@ async def on_message(message):
     else:
         ctx = await bot.get_context(message)
         await send_cards(ctx, command_text, f"Character Search: {command_text}")
+
 
 bot.run(DISCORD_BOT_TOKEN)
