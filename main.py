@@ -1,5 +1,4 @@
 import os
-import re
 import requests
 import discord
 from discord.ext import commands
@@ -11,10 +10,17 @@ BASE_URL = "https://api.justtcg.com/v1/cards"
 GAME_NAME = "One Piece Card Game"
 LIMIT = 20
 
+ALLOWED_CHANNEL_NAME = "marketwatch"
+
 intents = discord.Intents.default()
 intents.message_content = True
 
 bot = commands.Bot(command_prefix="!", intents=intents, help_command=None)
+
+
+@bot.check
+async def only_marketwatch(ctx):
+    return ctx.channel.name == ALLOWED_CHANNEL_NAME
 
 
 def fetch_cards(search=None, page=1):
@@ -41,12 +47,8 @@ def get_price(card):
 
     for v in card.get("variants", []):
         for key in [
-            "marketPrice",
-            "tcgplayerMarketPrice",
-            "price",
-            "latestPrice",
-            "lowPrice",
-            "midPrice",
+            "marketPrice", "tcgplayerMarketPrice", "price",
+            "latestPrice", "lowPrice", "midPrice"
         ]:
             price = v.get(key)
             if price:
@@ -56,12 +58,8 @@ def get_price(card):
                     pass
 
     for key in [
-        "marketPrice",
-        "tcgplayerMarketPrice",
-        "price",
-        "latestPrice",
-        "lowPrice",
-        "midPrice",
+        "marketPrice", "tcgplayerMarketPrice", "price",
+        "latestPrice", "lowPrice", "midPrice"
     ]:
         price = card.get(key)
         if price:
@@ -89,7 +87,8 @@ def find_image_url(obj):
                         return value
 
                 if value.startswith("http") and any(
-                    ext in value.lower() for ext in [".jpg", ".jpeg", ".png", ".webp"]
+                    ext in value.lower()
+                    for ext in [".jpg", ".jpeg", ".png", ".webp"]
                 ):
                     return value
 
@@ -187,6 +186,8 @@ class CardPaginator(discord.ui.View):
         price = get_price(card)
         image = get_image(card)
 
+        price_text = f"${price:.2f}" if price else "Not found"
+
         embed = discord.Embed(
             title=card.get("name", "Unknown Card"),
             description=(
@@ -194,12 +195,7 @@ class CardPaginator(discord.ui.View):
                 f"**Set:** {get_set(card)}\n"
                 f"**Number:** {get_number(card)}\n"
                 f"**Rarity:** {get_rarity(card)}\n"
-                f"**Price:** ${price:.2f}" if price else
-                f"**Market:** {self.title}\n"
-                f"**Set:** {get_set(card)}\n"
-                f"**Number:** {get_number(card)}\n"
-                f"**Rarity:** {get_rarity(card)}\n"
-                f"**Price:** Not found"
+                f"**Price:** {price_text}"
             ),
             color=discord.Color.orange()
         )
@@ -214,7 +210,17 @@ class CardPaginator(discord.ui.View):
         return embed
 
     async def update_msg(self, interaction):
-        await interaction.response.edit_message(embed=self.build_embed(), view=self)
+        if interaction.channel.name != ALLOWED_CHANNEL_NAME:
+            await interaction.response.send_message(
+                "Nami only works in #marketwatch.",
+                ephemeral=True
+            )
+            return
+
+        await interaction.response.edit_message(
+            embed=self.build_embed(),
+            view=self
+        )
 
     @discord.ui.button(label="⬅️ Previous", style=discord.ButtonStyle.gray)
     async def previous(self, interaction, button):
@@ -228,13 +234,23 @@ class CardPaginator(discord.ui.View):
 
     @discord.ui.button(label="⏭️ Next 20", style=discord.ButtonStyle.blurple)
     async def next_page(self, interaction, button):
+        if interaction.channel.name != ALLOWED_CHANNEL_NAME:
+            await interaction.response.send_message(
+                "Nami only works in #marketwatch.",
+                ephemeral=True
+            )
+            return
+
         try:
             self.page += 1
             new_cards = fetch_cards(self.search_term, self.page)
 
             if not new_cards:
                 self.page -= 1
-                await interaction.response.send_message("No more cards found.", ephemeral=True)
+                await interaction.response.send_message(
+                    "No more cards found.",
+                    ephemeral=True
+                )
                 return
 
             self.cards = sort_by_price(new_cards)
@@ -242,7 +258,10 @@ class CardPaginator(discord.ui.View):
             await self.update_msg(interaction)
 
         except Exception as e:
-            await interaction.response.send_message(f"Bot error: {e}", ephemeral=True)
+            await interaction.response.send_message(
+                f"Bot error: {e}",
+                ephemeral=True
+            )
 
 
 async def send_cards(ctx, search_term, title):
@@ -262,7 +281,8 @@ async def send_cards(ctx, search_term, title):
 
 @bot.event
 async def on_ready():
-    print(f"nami is online as {bot.user}")
+    print(f"Nami is online as {bot.user}")
+    print("Nami only responds in #marketwatch")
 
 
 @bot.command()
@@ -322,6 +342,9 @@ for code in ["eb01", "eb02", "eb03", "prb01", "prb02"]:
 @bot.event
 async def on_message(message):
     if message.author.bot:
+        return
+
+    if message.channel.name != ALLOWED_CHANNEL_NAME:
         return
 
     if not message.content.startswith("!"):
